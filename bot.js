@@ -1,5 +1,8 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import { Telegraf, Markup } from 'telegraf';
-import Chess from 'chess.js'; // npm install chess.js
+import { Chess } from 'chess.js';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) {
@@ -14,17 +17,11 @@ const challenges = {}; // { chatId: { from: userId, to: userId } }
 
 // /challenge komandasi
 bot.command('challenge', async (ctx) => {
-  if (!ctx.message.reply_to_message && ctx.message.entities.length < 2) {
-    return ctx.reply('Iltimos, jangga chaqirish uchun /challenge @username yoki reply qiling.');
+  if (!ctx.message.reply_to_message) {
+    return ctx.reply('Iltimos, jangga chaqirish uchun /challenge komandasi bilan foydalanuvchini reply qiling.');
   }
 
-  let toUser = null;
-  if (ctx.message.reply_to_message) {
-    toUser = ctx.message.reply_to_message.from;
-  } else {
-    // username'dan userni aniqlash mumkin emas Telegram APIda, faqat reply orqali
-    return ctx.reply('Iltimos, jangga chaqirish uchun foydalanuvchini reply qiling.');
-  }
+  const toUser = ctx.message.reply_to_message.from;
 
   if (toUser.id === ctx.from.id) {
     return ctx.reply('O‘zingizni jangga chaqira olmaysiz!');
@@ -49,6 +46,7 @@ bot.command('challenge', async (ctx) => {
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
   const chatId = ctx.chat.id;
+
   if (data.startsWith('accept_')) {
     const [_, fromId, toId] = data.split('_');
     if (ctx.from.id.toString() !== toId) {
@@ -68,8 +66,8 @@ bot.on('callback_query', async (ctx) => {
     };
     delete challenges[chatId];
 
-    await ctx.editMessageText('O‘yin boshlandi! White (@'+ctx.from.username + ') boshlaydi.');
-    sendBoard(chatId);
+    await ctx.editMessageText('O‘yin boshlandi! White (@' + ctx.from.username + ') boshlaydi.');
+    await sendBoard(chatId);
   }
   else if (data.startsWith('decline_')) {
     const [_, fromId, toId] = data.split('_');
@@ -80,10 +78,9 @@ bot.on('callback_query', async (ctx) => {
     await ctx.editMessageText('Chaqiriq rad etildi.');
   }
   else if (data.startsWith('move_')) {
-    // Harakat kodi: move_e2e4
     if (!games[chatId]) return ctx.answerCbQuery('O‘yin topilmadi.');
     const chessGame = games[chatId].chess;
-    const move = data.split('_')[1];
+    const move = data.slice(5); // move_ dan keyingi qism, masalan e2e4
     const playerId = ctx.from.id;
 
     const isWhiteTurn = chessGame.turn() === 'w';
@@ -99,12 +96,12 @@ bot.on('callback_query', async (ctx) => {
       return ctx.answerCbQuery('Noto‘g‘ri yurish.');
     }
 
-    if (chessGame.game_over()) {
+    if (chessGame.isGameOver()) {
       let resultText = 'O‘yin tugadi: ';
-      if (chessGame.in_checkmate()) resultText += 'Mat, g‘olib — @' + ctx.from.username;
-      else if (chessGame.in_stalemate()) resultText += 'Durrang (stalemate)';
-      else if (chessGame.in_threefold_repetition()) resultText += 'Durrang (takrorlash)';
-      else if (chessGame.insufficient_material()) resultText += 'Durrang (material yetarli emas)';
+      if (chessGame.isCheckmate()) resultText += 'Mat, g‘olib — @' + ctx.from.username;
+      else if (chessGame.isStalemate()) resultText += 'Durrang (stalemate)';
+      else if (chessGame.isThreefoldRepetition()) resultText += 'Durrang (takrorlash)';
+      else if (chessGame.isInsufficientMaterial()) resultText += 'Durrang (material yetarli emas)';
       else resultText += 'O‘yin yakunlandi.';
 
       delete games[chatId];
@@ -115,27 +112,43 @@ bot.on('callback_query', async (ctx) => {
     games[chatId].turn = chessGame.turn();
     await ctx.answerCbQuery('Yurish qabul qilindi.');
 
-    sendBoard(chatId);
+    await sendBoard(chatId);
   }
   else {
     await ctx.answerCbQuery('Noma\'lum amal.');
   }
 });
 
-// Taxtani matn ko‘rinishida yuborish
+// Taxtani va yurish tugmalarini inline keyboard bilan yuborish
 async function sendBoard(chatId) {
   if (!games[chatId]) return;
 
   const chessGame = games[chatId].chess;
-  const fen = chessGame.fen();
   const board = chessGame.ascii();
 
-  // Harakatlarni inline tugmalar bilan yuborish uchun har bir oq yoki qora figuraning yurishlarini inline tugmaga aylantirish lozim.
-  // Bu qiyin, shuning uchun hozircha faqat ASCII taxta va keyingi qadamlar uchun info beramiz.
-
+  // ASCII taxta yuborish
   await bot.telegram.sendMessage(chatId, `\`\`\`\n${board}\n\`\`\``, { parse_mode: 'Markdown' });
 
-  await bot.telegram.sendMessage(chatId, `Navbat: ${chessGame.turn() === 'w' ? 'White' : 'Black'}`);
+  // Mavjud yurishlarni olish
+  const moves = chessGame.moves({ verbose: true });
+
+  // Tugmalarni yaratish
+  const buttons = moves.map(move => {
+    const moveCode = `move_${move.from}${move.to}`;
+    return Markup.button.callback(`${move.from}${move.to}`, moveCode);
+  });
+
+  // Tugmalarni 4 tadan qatorlarga ajratamiz
+  const chunkSize = 4;
+  const keyboard = [];
+  for (let i = 0; i < buttons.length; i += chunkSize) {
+    keyboard.push(buttons.slice(i, i + chunkSize));
+  }
+
+  // Navbat kimda ekanini chiqaramiz
+  const turnText = `Navbat: ${chessGame.turn() === 'w' ? 'White' : 'Black'}`;
+
+  await bot.telegram.sendMessage(chatId, turnText, Markup.inlineKeyboard(keyboard));
 }
 
 bot.launch();
